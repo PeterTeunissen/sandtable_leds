@@ -7,19 +7,21 @@ extern const char main_js[];
 #define min(a,b) ((a)<(b)?(a):(b))
 #define max(a,b) ((a)>(b)?(a):(b))
 
-#define LED_PIN 2                       // 0 = GPIO0, 2=GPIO2
+#define LED_PIN 2                       // 0 = GPIO0, 2=GPIO2 = D4 on the Wemos D1 Mini
 #define LED_COUNT 105
 
 #define WIFI_TIMEOUT 30000              // checks WiFi every ...ms. Reset after this time, if WiFi cannot reconnect.
 #define HTTP_PORT 80
 
-#define DEFAULT_COLOR 0xFF5900
-#define DEFAULT_BRIGHTNESS 128
-#define DEFAULT_SPEED 1000
+#define DEFAULT_COLOR 0xFFFFFF  // 0xFF5900
+#define DEFAULT_BRIGHTNESS 128 // 0..255
+#define DEFAULT_SPEED 1000 // 0..65535
+#define DEFAULT_LOOP_SPEED 10000 
 #define DEFAULT_MODE FX_MODE_STATIC
 
 unsigned long auto_last_change = 0;
 unsigned long last_wifi_check_time = 0;
+unsigned long loopSpeed = DEFAULT_LOOP_SPEED;
 String modes = "";
 uint8_t myModes[] = {}; // *** optionally create a custom list of effect/mode numbers
 boolean auto_cycle = false;
@@ -45,9 +47,10 @@ void setup(){
   Serial.println("ready!");
 }
 
-char command[12];
+char command[15];
 char b[2];
 void loop() {
+  
   unsigned long now = millis();
 
   ws2812fx.service();
@@ -55,26 +58,40 @@ void loop() {
   if (Serial.available()) {
     char c = Serial.read();
     if (c=='\n') {      
-      Serial.print("Command:");
-      Serial.println(command);
-      char c = command[0];
-      memmove (command, command+1, strlen (command+1) + 1);            
-      handle_set(c,command);      
+//      Serial.print("Command:");
+//      Serial.println(command);
+      if (strlen(command)>0) {
+        if (command[0]=='{') {
+          memmove(command, command+1, strlen(command+1) + 1);            
+          char c = command[0];
+          memmove(command, command+1, strlen(command+1) + 1);
+          if (command[strlen(command)-1]=='}') {
+            command[strlen(command)-1]=0;
+            handle_set(c,command);  
+          } else {
+            Serial.println("Command does not end with '}'");
+          }
+        } else {
+          Serial.println("Command does not start with '{'");
+        }
+      } else {
+        Serial.println("No command captured to process.");   
+      }
       strcpy(command,"");
     } else {
       b[0]=c;
       b[1]=0;
-      if (strlen(command)<10) {
+      if (strlen(command)<14) {
         strcat(command,b);
       } else {
-        Serial.print("Buffer overrun! Resetting. ");
+        Serial.print("Error: Buffer overrun! Resetting. ");
         Serial.println(command);
         strcpy(command,"");
       }
     }    
   }
 
-  if (auto_cycle && (now - auto_last_change > 10000)) { // cycle effect mode every 10 seconds
+  if (auto_cycle && (now - auto_last_change > loopSpeed)) { // cycle effect mode every 10 seconds
     uint8_t next_mode = (ws2812fx.getMode() + 1) % ws2812fx.getModeCount();
     if (sizeof(myModes) > 0) { // if custom list of modes exists
       for (uint8_t i=0; i < sizeof(myModes); i++) {
@@ -85,8 +102,14 @@ void loop() {
       }
     }
     ws2812fx.setMode(next_mode);
-    Serial.print("mode is "); Serial.println(ws2812fx.getModeName(ws2812fx.getMode()));
+//    Serial.print("mode is "); Serial.println(ws2812fx.getModeName(ws2812fx.getMode()));
     auto_last_change = now;
+    handle_report();
+  }
+
+  if (!auto_cycle && (now - auto_last_change > (loopSpeed+5000))) { // cycle effect mode every 10 seconds
+    auto_last_change = now;
+    handle_report();  
   }
 }
 
@@ -106,6 +129,13 @@ void modes_setup() {
 
 char rep[200];
 
+void handle_report() {
+  sprintf(rep,"{ \"color\": %d, \"mode\": %d, \"modeName\": \"%s\", \"brightness\":%d, \"speed\": %d, \"autocycle\": \"%s\", \"loopSpeed\": %d}",
+    ws2812fx.getColor(), ws2812fx.getMode(), ws2812fx.getModeName(ws2812fx.getMode()), 
+    ws2812fx.getBrightness(), ws2812fx.getSpeed(), auto_cycle ? "on" : "off", loopSpeed);
+  Serial.println(rep);    
+}
+
 void handle_set(char command, char* arg) {
 
   Serial.print("handle_set. Command:");
@@ -114,62 +144,80 @@ void handle_set(char command, char* arg) {
   Serial.println(arg);
   
   if (command == 'r') {
-    sprintf(rep,"rep>> { \"color\": %d, \"mode\": %d, \"modeName\": \"%s\", \"brightness\":%d, \"speed\": %d, \"autocycle\": \"%s\"} <<rep",
-      ws2812fx.getColor(), ws2812fx.getMode(), ws2812fx.getModeName(ws2812fx.getMode()), 
-      ws2812fx.getBrightness(), ws2812fx.getSpeed(), auto_cycle ? "on" : "off");
-    Serial.println(rep);	  
+    handle_report();
   }
   
   if (command == 'c') {
     uint32_t tmp = (uint32_t) strtol(arg, NULL, 10);
     if (tmp >= 0x000000 && tmp <= 0xFFFFFF) {
       ws2812fx.setColor(tmp);
-      Serial.print("Color is "); 
-      Serial.println(ws2812fx.getModeName(ws2812fx.getMode()));
+//      Serial.print("Color is "); 
+//      Serial.println(ws2812fx.getModeName(ws2812fx.getMode()));
+      handle_report();
+    }
+  }
+
+  if (command == 'l') {
+    uint32_t tmp = (uint32_t) strtol(arg, NULL, 10);
+    if (tmp >= 0 && tmp <= 999999) {
+      loopSpeed = tmp;
+//      Serial.print("Color is "); 
+//      Serial.println(ws2812fx.getModeName(ws2812fx.getMode()));
+      handle_report();
     }
   }
 
   if (command == 'm') {
     uint8_t tmp = (uint8_t) strtol(arg, NULL, 10);
     ws2812fx.setMode(tmp % ws2812fx.getModeCount());
-    Serial.print("Mode is "); 
-    Serial.println(ws2812fx.getModeName(ws2812fx.getMode()));
+//    Serial.print("Mode is "); 
+//    Serial.println(ws2812fx.getModeName(ws2812fx.getMode()));
+    handle_report();
   }
 
   if (command == 'b') {
     if (arg[0] == '-') {
       ws2812fx.setBrightness(ws2812fx.getBrightness() * 0.8);
+    } else if (arg[0] == '+') {
+      ws2812fx.setBrightness(ws2812fx.getBrightness() * 1.2);    
     } else if (arg[0] == ' ') {
       ws2812fx.setBrightness(min(max(ws2812fx.getBrightness(), 5) * 1.2, 255));
     } else { // set brightness directly
       uint8_t tmp = (uint8_t) strtol(arg, NULL, 10);
       ws2812fx.setBrightness(tmp);
     }
-    Serial.print("Brightness is "); 
-    Serial.println(ws2812fx.getBrightness());
+//    Serial.print("Brightness is "); 
+//    Serial.println(ws2812fx.getBrightness());
+    handle_report();
   }
 
   if (command == 's') {
     if (arg[0] == '-') {
       ws2812fx.setSpeed(max(ws2812fx.getSpeed(), 5) * 1.2);
-    } else if (arg == " ") {
+    } else if (arg[1] == '+') {
+      ws2812fx.setSpeed(max(ws2812fx.getSpeed(), 5) * 0.8);
+    } else if (arg[1] == ' ') {
       ws2812fx.setSpeed(ws2812fx.getSpeed() * 0.8);
     } else {
       uint16_t tmp = (uint16_t) strtol(arg, NULL, 10);
       ws2812fx.setSpeed(tmp);
     }
-    Serial.print("Speed is "); 
-    Serial.println(ws2812fx.getSpeed());
+//    Serial.print("Speed is "); 
+//    Serial.println(ws2812fx.getSpeed());
+    handle_report();
   }
 
   if (command == 'a') {
     if (arg[0] == '-') {
       auto_cycle = false;
+    } else if (arg[0] == '+') {
+      auto_cycle = true;
     } else {
       auto_cycle = true;
       auto_last_change = 0;
     }
-    Serial.print("AutoCyle is "); 
-    Serial.println(auto_cycle ? "on" : "off");    
+//    Serial.print("AutoCyle is "); 
+//    Serial.println(auto_cycle ? "on" : "off");    
+    handle_report();
   }    
 }
